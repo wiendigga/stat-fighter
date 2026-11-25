@@ -32,7 +32,9 @@ test('every method and input mode gives a complete protocol paragraph', () => {
     assert.ok(text.endsWith(content.disclaimer.copy), `${label}: disclaimer last`);
     assert.ok(placeholders.some(x => text.includes(x)), `${label}: placeholder`);
     assert.ok(text.includes(`Stat Fighter ’89 version ${content.version}`), `${label}: software named`);
-    if (m.dropout !== false && dropout !== '0') assert.match(text, /Allowing for 15% of participants without analysable data/, label);
+    const showsDropout = m.shownExtras({ ...m.defaults, mode: mode.id }).includes('dropout');
+    if (showsDropout && dropout !== '0') assert.match(text, /Allowing for 15% of participants without analysable data/, label);
+    if (!showsDropout) assert.doesNotMatch(text, /Allowing for/, label);
     if (dropout === '0') assert.doesNotMatch(text, /Allowing for/, label);
   }
 });
@@ -69,4 +71,25 @@ test('Bell reads every boundary from its own table', () => {
   const { text } = make('gsd-efficacy', 'effect');
   for (const z of ['2.9626', '2.3590', '2.0141', '0.00153', '0.00916', '0.02200']) assert.ok(text.includes(z), z);
   assert.ok(text.includes('after 86, 129 and 172 participants'));
+});
+
+test('Bell and Towel in hazard mode: events, enrolment and censoring stay apart', () => {
+  for (const id of ['gsd-efficacy', 'gsd-futility']) {
+    const { r, text } = make(id, 'hazard', { dropout: '0.2' }), m = methods[id];
+    const raw = { ...m.defaults, mode: 'hazard' }, p = m.normalize(raw);
+    const enrol = m.resultTables(raw, p, r, stats).flatMap(t => t.rows ?? []).find(row => row[0] === 'Participants to enrol')[1];
+    assert.match(text, new RegExp(`the maximum number of events is ${count.format(r.total)} for`), id);
+    assert.match(text, new RegExp(`Analyses are planned when ${r.looks.map(n => count.format(n)).join(', ').replace(/, (?=[^,]*$)/, ' and ')} events have been observed`), id);
+    assert.match(text, /The expected number of events is \d/, id);
+    assert.ok(text.includes(`approximately ${enrol} participants need to be enrolled for the expected number of events at the final analysis to reach ${count.format(r.total)}`), id);
+    assert.match(text, /lost to follow-up or event-free at an analysis are censored and contribute no events/, id);
+    // No participant dropout allowance is applied to an event count, and nothing calls events a size.
+    assert.doesNotMatch(text, /Allowing for|without analysable data|maximum size|number of participants is/, id);
+  }
+});
+
+test('Bell and Towel in hazard mode without valid enrolment inputs leave a placeholder', () => {
+  const { text } = make('gsd-efficacy', 'hazard', { controlMedian: '0' });
+  assert.match(text, /\[number of participants\]/);
+  assert.doesNotMatch(text, /need to be enrolled/);
 });

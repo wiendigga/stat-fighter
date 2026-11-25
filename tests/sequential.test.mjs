@@ -59,3 +59,61 @@ test('one-look spending reduces to the fixed design', () => {
   const d = stats.sequentialDesign({ fractions: [.95, 1], alpha: .025, power: .9, spending: 'power', spendingParameter: 1, futility: false, fixedSize: 100 });
   assert.ok(d.inflation > 1 && d.inflation < 1.3);
 });
+
+// ---- Arena what-if table and the hazard-mode enrolment step (methods layer) ----
+import { createRequire } from 'node:module';
+const methods = createRequire(import.meta.url)('../journey/methods.js');
+
+test('what-if: every fighter re-solves at another target power like a fresh calculation', () => {
+  for (const m of Object.values(methods)) for (const mode of m.modes) {
+    // Bell and Towel's fixed mode is an input size tied to its target power; tested below.
+    if (mode.id === 'fixed') continue;
+    const raw = { ...m.defaults, mode: mode.id }, p = m.normalize(raw);
+    const totals = [];
+    for (const t of [.8, .9, .95]) {
+      const whatIf = m.solve(stats, { ...p, power: t }, m.id), fresh = m.solve(stats, m.normalize({ ...raw, power: String(t) }), m.id);
+      assert.equal(whatIf.total, fresh.total, `${m.id}/${mode.id} at ${t}`);
+      close(whatIf.power, fresh.power, `${m.id}/${mode.id} power at ${t}`, 1e-12);
+      totals.push(whatIf.total);
+    }
+    assert.ok(totals[0] < totals[1] && totals[1] < totals[2], `${m.id}/${mode.id}: ${totals}`);
+  }
+});
+
+test('what-if in fixed mode rescales the fixed-design size and keeps the effect', () => {
+  for (const id of ['gsd-efficacy', 'gsd-futility']) {
+    const m = methods[id], p = m.normalize({ ...m.defaults, mode: 'fixed' }), base = m.solve(stats, p, id);
+    const at = t => m.solve(stats, { ...p, power: t }, id);
+    assert.equal(at(Number(m.defaults.power)).total, base.total, id);
+    assert.ok(at(.8).total < base.total && base.total < at(.95).total, id);
+    for (const t of [.8, .95]) {
+      const x = at(t);
+      assert.ok(x.power >= t && x.power < t + .02, `${id} at ${t}: ${x.power}`);
+      // Efficacy-only bounds do not depend on β, so the curve (planned design) agrees with the table.
+      if (id === 'gsd-efficacy') close(m.powerAt(stats, p, x.total).power, x.power, `${id} curve at ${t}`, 1e-9);
+    }
+  }
+});
+
+test('Bell and Towel in hazard mode: enrolment converts the maximum events into participants', () => {
+  for (const id of ['gsd-efficacy', 'gsd-futility']) {
+    const m = methods[id], raw = { ...m.defaults, mode: 'hazard' }, p = m.normalize(raw), r = m.solve(stats, p, id);
+    const rows = Object.fromEntries(m.resultTables(raw, p, r, stats).find(t => t.title === 'Enrolment from events').rows);
+    const control = Math.LN2 / 12, eta = -Math.log(1 - .05), A = 12, F = 12;
+    const pEvent = l => { const h = l + eta; return l / h * (1 - (Math.exp(-h * F) - Math.exp(-h * (A + F))) / (h * A)); };
+    const expected = Math.ceil(r.total / ((pEvent(.7 * control) + pEvent(control)) / 2) - 1e-9);
+    assert.equal(rows['Participants to enrol'], new Intl.NumberFormat('en-US').format(expected), id);
+    assert.ok(expected > r.total, id);
+    assert.deepEqual(m.shownExtras(raw), ['controlMedian', 'accrual', 'followUp', 'loss'], id);
+    assert.deepEqual(m.shownExtras({ ...raw, mode: 'effect' }), ['dropout'], id);
+    assert.equal(m.labelsFor(raw).unit, 'events', id);
+    assert.equal(m.labelsFor({ ...raw, mode: 'effect' }).unit, 'participants', id);
+    // Enrolment inputs never change the event count.
+    assert.equal(m.solve(stats, m.normalize({ ...raw, controlMedian: '30', loss: '0.2' }), id).total, r.total, id);
+    // Effect and fixed modes have no enrolment table.
+    for (const mode of ['effect', 'fixed']) {
+      const q = m.normalize({ ...raw, mode });
+      assert.ok(!m.resultTables({ ...raw, mode }, q, m.solve(stats, q, id), stats).some(t => t.title === 'Enrolment from events'), `${id}/${mode}`);
+    }
+  }
+});

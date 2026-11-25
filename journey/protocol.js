@@ -177,24 +177,33 @@
     },
   };
 
-  // Bell and Towel share one template; every boundary is read from the method's own tables.
+  // Bell and Towel share one template; every boundary is read from the method's own tables. In
+  // hazard-ratio mode every count is an event count; participants appear only in the enrolment step.
   function sequential(m, raw, p, r, x) {
     const names = Object.fromEntries(m.fields.spending.options.map(o => [o.value, o.label.replace(/ \([ργ]\)$/, '')]));
     const param = (fn, value) => fn === 'power' ? ` (ρ = ${num(value)})` : fn === 'hsd' ? ` (γ = ${num(value)})` : '';
-    const looks = table(x.tables, 'Boundaries per look'), summary = table(x.tables, 'Design summary');
+    const looks = table(x.tables, 'Boundaries per look');
     const col = name => looks.rows.map(rw => rw[looks.columns.indexOf(name)]);
-    const unit = raw.mode === 'effect' ? 'participants' : raw.mode === 'hazard' ? 'events' : '[units]';
-    const what = raw.mode === 'effect' ? 'number of participants' : raw.mode === 'hazard' ? 'number of events' : 'size';
-    const fixed = num(row(x.tables, 'Fixed-design size'));
-    const start = raw.mode === 'effect' ? `Assuming a standardised mean difference of ${num(raw.effect)} ${SOURCE}`
-      : raw.mode === 'hazard' ? `Assuming a hazard ratio of ${num(raw.hazardRatio)} ${SOURCE}`
+    const hazard = raw.mode === 'hazard', effect = raw.mode === 'effect', noun = hazard ? 'events' : 'size';
+    const what = effect ? 'number of participants' : hazard ? 'number of events' : 'size';
+    const fixed = num(row(x.tables, `Fixed-design ${noun}`));
+    const start = effect ? `Assuming a standardised mean difference of ${num(raw.effect)} ${SOURCE} and two equal groups`
+      : hazard ? `Assuming a hazard ratio of ${num(raw.hazardRatio)} ([test group] versus [reference group]) ${SOURCE} under proportional hazards, with 1:1 allocation and a one-sided log-rank test (Schoenfeld approximation)`
       : `Starting from a fixed-design size of ${fixed} [units]`;
-    const out = [`The comparison of [primary endpoint] between [test group] and [reference group] uses a group sequential design with ${p.fractions.length} analyses at ${list(p.fractions.map(f => `${pc(f)}%`))} of the maximum information. Efficacy boundaries are derived from a ${names[p.spending]}${param(p.spending, p.spendingParameter)} alpha-spending function (one-sided overall α = ${num(p.alpha)}).`];
+    const out = [`The comparison of [primary endpoint]${hazard ? ' (time to event)' : ''} between [test group] and [reference group] uses a group sequential design with ${p.fractions.length} analyses at ${list(p.fractions.map(f => `${pc(f)}%`))} of the ${hazard ? 'maximum number of events' : 'maximum information'}. Efficacy boundaries are derived from a ${names[p.spending]}${param(p.spending, p.spendingParameter)} alpha-spending function (one-sided overall α = ${num(p.alpha)}).`];
     if (p.futility) out.push(`Non-binding futility boundaries are derived from a ${names[p.futilitySpending]}${param(p.futilitySpending, p.futilityParameter)} beta-spending function.`);
-    out.push(`${start}, the maximum ${what} is ${N(r.total)} for ${power(p.power)}% power (achieved: ${power(r.power)}%; inflation factor ${row(x.tables, 'Inflation factor')} over the fixed design of ${fixed}).`,
-      `Analyses are planned after ${list(r.looks.map(N))} ${unit}. The efficacy boundaries on the Z scale are ${list(col('Efficacy Z ≥'))} (nominal one-sided p-values ${list(col('Nominal p'))})${p.futility ? `; the futility boundaries are ${list(col('Futility Z <'))}` : ''}.`,
-      `The expected size is ${row(x.tables, 'Expected size under H1')} under the alternative and ${row(x.tables, 'Expected size under H0')} under the null hypothesis.`,
-      `If the actual information fractions differ from those planned, boundaries will be recalculated with the same spending function${p.futility ? 's' : ''}.`);
+    const bounds = `The efficacy boundaries on the Z scale are ${list(col('Efficacy Z ≥'))} (nominal one-sided p-values ${list(col('Nominal p'))})${p.futility ? `; the futility boundaries are ${list(col('Futility Z <'))}` : ''}.`;
+    out.push(`${start}, the maximum ${what} is ${N(r.total)} for ${power(p.power)}% power (achieved: ${power(r.power)}%; inflation factor ${row(x.tables, 'Inflation factor')} over the ${hazard ? `${fixed} events of a fixed design` : `fixed design of ${fixed}`}).`,
+      hazard ? `Analyses are planned when ${list(r.looks.map(N))} events have been observed. ${bounds}` : `Analyses are planned after ${list(r.looks.map(N))} ${effect ? 'participants' : '[units]'}. ${bounds}`,
+      `The expected ${what} is ${row(x.tables, `Expected ${noun} under H1`)} under the alternative and ${row(x.tables, `Expected ${noun} under H0`)} under the null hypothesis.`);
+    if (hazard) {
+      const enrol = row(x.tables, 'Participants to enrol');
+      out.push(enrol !== undefined
+        ? `With a median time to event of ${num(raw.controlMedian)} [time units] in [reference group], uniform accrual over ${num(raw.accrual)} [time units], ${num(raw.followUp)} [time units] of additional follow-up and ${pc(raw.loss)}% loss to follow-up per [time unit], approximately ${enrol} participants need to be enrolled for the expected number of events at the final analysis to reach ${N(r.total)} (exponential model).`
+        : 'The number of participants to enrol [number of participants] follows from the accrual, follow-up and loss-to-follow-up assumptions [enrolment assumptions].',
+        'Participants who are lost to follow-up or event-free at an analysis are censored and contribute no events. The analyses are triggered by the number of observed events, not by the number of participants enrolled or by calendar time; enrolment should be monitored against the observed number of events.');
+    }
+    out.push(`If the actual information fractions differ from those planned, boundaries will be recalculated with the same spending function${p.futility ? 's' : ''}.`);
     return out;
   }
   templates['gsd-efficacy'] = sequential;
@@ -206,7 +215,8 @@
     if (!template) throw new Error(`No protocol template for ${m.id}.`);
     const out = [...template(m, raw, p, r, extras)];
     const d = Number(extras.dropout);
-    if (m.dropout !== false && Number.isFinite(d) && d > 0 && d < 0.9) {
+    // Only where the result's mode shows a dropout allowance: never for an event count.
+    if (m.shownExtras(raw).includes('dropout') && Number.isFinite(d) && d > 0 && d < 0.9) {
       const e = enrolment(p, r, d);
       out.push(`Allowing for ${pc(d)}% of participants without analysable data, ${N(e.total)} participants will be enrolled${e.detail ? ` (${e.detail})` : ''}.`);
     }

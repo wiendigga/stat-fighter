@@ -322,7 +322,7 @@
     'tost-lognormal': { cv: ['lognormal', 'cv'], logSD: ['lognormal', 'sigma'] },
     'tost-crossover': { cv: ['lognormal', 'cv'], logSD: ['lognormal', 'sigma'] },
     'log-rank': { hazardRatio: ['survival', 'hr'], controlMedian: ['survival', 'median0'] },
-    'gsd-efficacy': { hazardRatio: ['survival', 'hr'] }, 'gsd-futility': { hazardRatio: ['survival', 'hr'] },
+    'gsd-efficacy': { hazardRatio: ['survival', 'hr'], controlMedian: ['survival', 'median0'] }, 'gsd-futility': { hazardRatio: ['survival', 'hr'], controlMedian: ['survival', 'median0'] },
     'negative-binomial': { dispersion: ['counts', 'k'] },
     'vaccine-efficacy': { attackRate: ['counts', 'risk'] },
     'ni-proportions': { p1: ['risk', 'p1'] },

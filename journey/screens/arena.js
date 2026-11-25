@@ -51,7 +51,7 @@
     if (p.power < .8) out.push(`Power ${pct(p.power)} misses a real effect more than one time in five.`);
     if (p.ratio !== undefined && (p.ratio > 3 || p.ratio < 1 / 3)) out.push('Allocation beyond 3:1 buys the same power with a lot more total sample.');
     if (!m.marginPlanning && p.alpha > .05) out.push(`Alpha ${p.alpha} is lenient. Check what your field and reviewers accept.`);
-    if (r && m.unit !== 'observed events') {
+    if (r && !/events/.test(m.labelsFor(kit.state.draft).unit)) {
       const smallest = Math.min(r.n, r.n2 || r.n);
       if (smallest < 10) out.push(`Only ${smallest} per group. Approximations and normality checks get shaky this small.`);
     }
@@ -111,14 +111,14 @@
   function headline() {
     const { outcome, stale } = kit.state, m = kit.method, f = kit.fighter;
     if (!outcome) return waiting();
-    const { parameters: p, result: r } = outcome;
+    const { parameters: p, result: r } = outcome, v = m.labelsFor(outcome.raw);
     return `<div class="j-result-head j-victory-head"><p class="j-kicker">${stale ? 'PARAMETERS CHANGED' : 'K.O. / CALCULATION COMPLETE'}</p><h2 class="j-slant">${stale ? 'REMATCH?' : 'YOU WIN'}</h2><p class="j-victory-line">${stale ? 'Ready for a rematch?' : escape(kit.pick(kit.pool(f, 'resultTitle')))}</p></div>
       ${stale ? '<p class="j-stale" role="status">Previous result — recalculate to update. Copy and share are paused.</p>' : ''}
-      <div class="j-score"><span>${m.scoreLabel ?? 'REQUIRED SAMPLE SIZE'}</span><strong>${fmt.format(r.total)}</strong><span>${m.totalLabel}</span></div>
+      <div class="j-score"><span>${v.scoreLabel}</span><strong>${fmt.format(r.total)}</strong><span>${v.totalLabel}</span></div>
       <div class="j-group-counts">${m.allocations(r, p).map(([label, value]) => `<div>${escape(label.toUpperCase())}<strong>${fmt.format(value)}</strong></div>`).join('')}</div>
       <div class="j-power-label"><span>${m.powerLabel ?? 'ACHIEVED POWER'}</span><b>${pct(r.power)}</b></div>
       <meter min="0" max="1" value="${r.power}" aria-label="Achieved power">${pct(r.power)}</meter>
-      <p class="j-small">Target ${pct(p.power)} · Complete, analyzable ${m.unit}.</p>
+      <p class="j-small">Target ${pct(p.power)} · ${escape(v.countNote)}</p>
       <p class="j-small j-disclaimer">${escape(content.disclaimer.short)}</p>
       ${m.calculationNote ? `<p class="j-small j-calculation-note">${escape(m.calculationNote)}</p>` : ''}`;
   }
@@ -133,6 +133,9 @@
     return `ENROL ${fmt.format(e.total)}${e.detail ? ` (${e.detail})` : ''} so that about ${fmt.format(r.total)} remain after ${(d * 100).toFixed(1).replace(/\.0$/, '')}% dropout.`;
   }
   const tableRaw = () => ({ ...kit.state.outcome.raw, ...Object.fromEntries(kit.extraKeys(kit.method).map(k => [k, kit.state.draft[k]])) });
+  // Extras follow the mode of the result (Bell and Towel: dropout for participants, enrolment for events).
+  const shownExtras = () => kit.method.shownExtras(kit.state.outcome.raw);
+  const showsDropout = () => shownExtras().includes('dropout');
   function tables() {
     const m = kit.method;
     if (!m.resultTables || !kit.state.outcome) return [];
@@ -142,7 +145,7 @@
   const tableHtml = t => `<div class="j-table-wrap" tabindex="0" role="region" aria-label="${escape(t.title)}"><table class="j-table${t.columns ? ' j-wide' : ''}"><caption>${escape(t.title)}</caption>${t.columns ? `<thead><tr>${t.columns.map(c => `<th scope="col">${escape(c)}</th>`).join('')}</tr></thead>` : ''}<tbody>${t.rows.map(row => t.columns ? `<tr>${row.map(c => `<td>${escape(c)}</td>`).join('')}</tr>` : `<tr><th scope="row">${escape(row[0])}</th><td>${escape(row[1])}</td></tr>`).join('')}</tbody></table></div>${t.note ? `<p class="j-small">${escape(t.note)}</p>` : ''}`;
   function extrasOut() {
     if (!kit.state.outcome) return '';
-    return `${kit.method.dropout === false ? '' : `<p class="j-dropout-out">${escape(dropoutLine())}</p>`}${tables().map(tableHtml).join('')}`;
+    return `${showsDropout() ? `<p class="j-dropout-out">${escape(dropoutLine())}</p>` : ''}${tables().map(tableHtml).join('')}`;
   }
   // Protocol-ready paragraph: the same numbers as the receipt, the tables and the enrol line.
   // R code: verify the result with an independent package, and analyse the data.
@@ -155,15 +158,15 @@
   const rBlock = (id, title, status, code, stale) => `<details class="j-receipt j-rcode"><summary>${title}</summary><p class="j-small">${escape(status)}</p><pre id="j-${id}" tabindex="0">${escape(code)}</pre><button class="j-button" data-copy="${id}" ${stale ? 'disabled' : ''}>COPY R CODE</button></details>`;
   function protocolText() {
     const { parameters: p, result: r } = kit.state.outcome, m = kit.method;
-    return protocol.text(m, tableRaw(), p, r, { dropout: m.dropout === false ? 0 : kit.state.draft.dropout, version: content.version, engine: stats.version ?? '1', tables: tables(), disclaimer: content.disclaimer.copy, reproducible: reproducible() });
+    return protocol.text(m, tableRaw(), p, r, { dropout: showsDropout() ? kit.state.draft.dropout : 0, version: content.version, engine: stats.version ?? '1', tables: tables(), disclaimer: content.disclaimer.copy, reproducible: reproducible() });
   }
   function afterResult() {
     const { outcome, stale } = kit.state, m = kit.method;
     if (!outcome) return '';
     const { parameters: p, result: r, raw } = outcome;
-    const extras = [...(m.dropout === false ? [] : ['dropout']), ...(m.extraFields ?? [])];
+    const extras = shownExtras();
     return `<section class="j-extras" aria-labelledby="j-extras-title">
-        <h3 id="j-extras-title">${escape(m.extraTitle ?? 'PLANNING EXTRAS')}</h3>
+        <h3 id="j-extras-title">${escape(m.labelsFor(raw).extraTitle)}</h3>
         <div class="j-fields">${extras.map(id => id === 'dropout' ? dropoutField() : field(id, true)).join('')}</div>
         <div id="j-extras-out" aria-live="polite">${extrasOut()}</div>
       </section>
@@ -184,7 +187,7 @@
     const X = x => L + (x - x0) / Math.max(1, x1 - x0) * (W - L - R), Y = y => T + (1 - y) * (H - T - B);
     const path = points.map(([x, y], i) => `${i ? 'H' : 'M'}${X(x).toFixed(1)}${i ? ` V${Y(y).toFixed(1)}` : ` ${Y(y).toFixed(1)}`}`).join(' ');
     const first = points[0], last = points.at(-1);
-    const label = `Power curve. Power rises from ${pct(first[1])} at ${fmt.format(first[0])} to ${pct(last[1])} at ${fmt.format(last[0])} ${kit.method.unit}. The target ${pct(p.power)} is first reached at ${fmt.format(r.total)}.`;
+    const label = `Power curve. Power rises from ${pct(first[1])} at ${fmt.format(first[0])} to ${pct(last[1])} at ${fmt.format(last[0])} ${kit.method.labelsFor(kit.state.outcome.raw).unit}. The target ${pct(p.power)} is first reached at ${fmt.format(r.total)}.`;
     return `<svg class="j-curve" viewBox="0 0 ${W} ${H}" role="img" aria-label="${escape(label)}" shape-rendering="crispEdges">
       ${[0, .5, 1].map(y => `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(y)}" y2="${Y(y)}"/><text x="${L - 4}" y="${Y(y) + 3}" text-anchor="end">${y * 100}%</text>`).join('')}
       <line class="target" x1="${L}" x2="${W - R}" y1="${Y(p.power)}" y2="${Y(p.power)}"/>
@@ -207,7 +210,7 @@
       catch { return `<tr><th scope="row">${pct(t)}</th><td colspan="2">Beyond the 1,000,000 limit</td></tr>`; }
     }).join('');
     if (kit.state.outcome !== outcome) return;
-    target.innerHTML = `${unique.length > 1 ? curveSvg(unique, p, r) : ''}<table class="j-table j-whatif"><caption>What if you wanted more power?</caption><thead><tr><th scope="col">Target</th><th scope="col">${escape(m.totalLabel.toLowerCase())}</th><th scope="col">Achieved</th></tr></thead><tbody>${rows}</tbody></table>`;
+    target.innerHTML = `${unique.length > 1 ? curveSvg(unique, p, r) : ''}<table class="j-table j-whatif"><caption>What if you wanted more power?</caption><thead><tr><th scope="col">Target</th><th scope="col">${escape(m.labelsFor(outcome.raw).totalLabel.toLowerCase())}</th><th scope="col">Achieved</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function refreshResult() {
@@ -268,9 +271,9 @@
     if (!s.outcome || s.stale) return;
     const { result: r, parameters: p } = s.outcome, raw = tableRaw();
     const text = kind === 'link' ? location.href.split('#')[0] + kit.urlFor(raw, true) : kind === 'protocol' ? protocolText() : kind === 'r-verify' ? rSnippets().verify : kind === 'r-analysis' ? rSnippets().analysis : [
-      `STAT FIGHTER ’89 — ${m.name}`, `Required: ${r.total} ${m.unit}`,
+      `STAT FIGHTER ’89 — ${m.name}`, `Required: ${r.total} ${m.labelsFor(s.outcome.raw).unit}`,
       ...m.allocations(r, p).map(([label, value]) => `${label}: ${value}`), `Achieved power: ${pct(r.power)}; target: ${pct(p.power)}`,
-      ...(m.dropout === false || !Number(s.draft.dropout) ? [] : [dropoutLine()]),
+      ...(!showsDropout() || !Number(s.draft.dropout) ? [] : [dropoutLine()]),
       ...m.receipt(s.outcome.raw, p, r).map(([label, value]) => `${label}: ${value}`),
       ...tables().flatMap(t => [t.title, ...(t.columns ? [t.columns.join(' | ')] : []), ...t.rows.map(row => row.join(t.columns ? ' | ' : ': ')), ...(t.note ? [t.note] : [])]),
       m.assumptions, m.allocationRule, `Engine ${stats.version ?? '1'} / method ${m.version}; objective: sample size.`, content.disclaimer.copy,
@@ -416,7 +419,7 @@
         const parameters = method.normalize(s.draft), result = method.solve(stats, parameters, method.id);
         s.outcome = { parameters, result, raw: kit.coreDraft(method, s.draft) }; s.stale = false; kit.routeError = ''; s.seed = kit.newSeed();
         kit.replaceUrl(kit.urlFor(tableRaw(), true));
-        kit.recordScore({ id: method.id, name: kit.fighter.name, total: result.total, unit: method.unit, power: result.power, at: new Date().toISOString().slice(0, 10), link: kit.urlFor(tableRaw(), true) });
+        kit.recordScore({ id: method.id, name: kit.fighter.name, total: result.total, unit: method.labelsFor(s.outcome.raw).unit, power: result.power, at: new Date().toISOString().slice(0, 10), link: kit.urlFor(tableRaw(), true) });
         refreshResult(); kit.refreshHud(); kit.emit('calculationSucceeded');
         // At any width: show the ring for the fight if it is off screen, then bring the result
         // into view. In one column the result sits below the form, so it always scrolls there.

@@ -8,7 +8,7 @@
   const R = x => String(Number(x));
   const alt = a => ({ 'two-sided': 'two.sided', greater: 'greater', less: 'less' }[a] ?? 'two.sided');
   // Date and versions from tests/reference/rcode-provenance.txt (npm run check:r).
-  const checkedOn = '2026-11-17';
+  const checkedOn = '2026-11-25';
   const versions = { pwr: '1.3.0', PowerTOST: '1.5.7', gsDesign: '3.11.0', MKpower: '1.1', MESS: '0.6.0', MASS: '7.3.65', survival: '3.8.6' };
 
   // Shared R helpers: the app's "smallest size reaching the target" search, stepping from a guess.
@@ -31,6 +31,16 @@ half_up <- function(x) floor(x + 0.5)`;
 n2_of <- function(n1) max(2, half_up(n1 * ratio))
 n1 <- sf_search(function(n1) power_at(n1, n2_of(n1)), floor(n_equal * (1 + 1 / ratio) / 2) - 2, ${lo})
 sf_n <- n1 + n2_of(n1)`;
+
+  // Enrolment from events (Harbor; Bell and Towel in hazard mode). Uses hr and q, defined earlier or in setup.
+  const enrolmentR = (raw, events, groups, setup = '') => `
+
+# Enrolment step: a base R restatement of the app's exponential model, not a package check.${setup}
+lambda <- c(${R(Math.LN2 / Number(raw.controlMedian))} * hr, ${R(Math.LN2 / Number(raw.controlMedian))})   # hazards: ${groups}
+eta <- -log(1 - ${R(raw.loss)}); A <- ${R(raw.accrual)}; F <- ${R(raw.followUp)}
+p_event <- sapply(lambda, function(l) { h <- l + eta; l / h * (if (A == 0) 1 - exp(-h * F) else 1 - (exp(-h * F) - exp(-h * (A + F))) / (h * A)) })
+sf_enrol <- ceiling(${events} / sum(c(q, 1 - q) * p_event) - 1e-9)
+cat("Participants to enrol:", sf_enrol, "\\n")`;
 
   const builders = {
     'two-sample'(m, raw, p, r) {
@@ -222,14 +232,7 @@ ciBinomial(x1 = x1, x2 = x2, n1 = n1, n2 = n2, alpha = ${R(2 * p.alpha)})    # t
     },
     'log-rank'(m, raw, p, r, x) {
       const hr = Math.exp(-p.effect), q = p.allocation;
-      const enrol = x.enrol ? `
-
-# Enrolment step: a base R restatement of the app's exponential model, not a package check.
-lambda <- c(${R(Math.LN2 / Number(raw.controlMedian))} * hr, ${R(Math.LN2 / Number(raw.controlMedian))})   # hazards: Group 1, Group 2
-eta <- -log(1 - ${R(raw.loss)}); A <- ${R(raw.accrual)}; F <- ${R(raw.followUp)}
-p_event <- sapply(lambda, function(l) { h <- l + eta; l / h * (1 - (exp(-h * F) - exp(-h * (A + F))) / (h * A)) })
-sf_enrol <- ceiling(${r.total} / sum(c(q, 1 - q) * p_event) - 1e-9)
-cat("Participants to enrol:", sf_enrol, "\\n")` : '';
+      const enrol = x.enrol ? enrolmentR(raw, r.total, 'Group 1, Group 2') : '';
       return {
         packages: ['gsDesign'], check: 'exact', note: '',
         verify: `library(gsDesign)
@@ -471,8 +474,9 @@ exp(t.test(log(y) ~ group, data = dat, var.equal = TRUE, conf.level = ${R(1 - 2 
 
   // Bell and Towel: gsDesign with the same spending functions; bounds compared to 1e-3.
   const spendR = { obf: 'sfLDOF', pocock: 'sfLDPocock', power: 'sfPower', hsd: 'sfHSD' };
-  function sequential(m, raw, p, r) {
-    const k = p.fractions.length, futility = Boolean(p.futility);
+  function sequential(m, raw, p, r, x) {
+    const k = p.fractions.length, futility = Boolean(p.futility), hazard = raw.mode === 'hazard';
+    const enrol = hazard && x.enrol ? enrolmentR(raw, r.total, 'test, control', `\nhr <- ${R(p.effect)}; q <- 0.5   # test / control hazard ratio; equal allocation`) : '';
     const sfu = `sfu = ${spendR[p.spending]}${['power', 'hsd'].includes(p.spending) ? `, sfupar = ${R(p.spendingParameter)}` : ''}`;
     const sfl = futility ? `, sfl = ${spendR[p.futilitySpending]}${['power', 'hsd'].includes(p.futilitySpending) ? `, sflpar = ${R(p.futilityParameter)}` : ''}` : '';
     return {
@@ -490,11 +494,11 @@ N <- ${r.total}
 pr <- gsProbability(k = ${k}, theta = g$delta, n.I = N * timing, a = ${futility ? 'g$lower$bound' : `rep(-20, ${k})`}, b = g$upper$bound)
 sf_power <- sum(pr$upper$prob[, 1])
 sf_bounds <- g$upper$bound
-${report}`,
+${report}${enrol}`,
       analysis: `# At each completed look, compute the Z statistic for the treatment effect from the data so far
 # (e.g. a two-sample t or log-rank Z, oriented so that benefit is positive), then call check_looks().
 library(gsDesign)
-n_max <- ${r.total}   # planned maximum (participants or events)
+n_max <- ${r.total}   # planned maximum ${hazard ? 'number of events (not participants)' : raw.mode === 'effect' ? 'number of participants' : 'size'}
 check_looks <- function(n_observed, z_observed) {
   # Boundaries for the information actually reached, with the same spending functions:
   timing_actual <- c(n_observed / n_max, 1)

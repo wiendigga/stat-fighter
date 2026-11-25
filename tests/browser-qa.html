@@ -92,6 +92,8 @@ document.querySelector('#run').onclick=async()=>{
  const enrol=$('#j-extras-out').textContent;edit('attackRate','.04');check($('#j-extras-out').textContent!==enrol&&score()==='160','attack rate changes enrolment, not the case count');
  await load('#arena?v=1&test=negative-binomial&nullRatio=1.15&run=1');check(!!score()&&$('.j-derived').textContent.includes('1.15'),'Scatter plans non-inferiority with a null rate ratio');
  await load('#arena?v=1&test=gsd-futility&run=1');check(score()==='182','Towel default maximum size');check(all('.j-table.j-wide tbody tr').length===3&&$('.j-table.j-wide').textContent.includes('Futility'),'Towel shows a per-look table with futility bounds');check($('.j-receipt').textContent.includes('Fixed-design size'),'GSD receipt records the fixed-design size');
+ await load('#arena?v=1&test=gsd-efficacy&mode=hazard&run=1');check(score()==='337'&&$('.j-score').textContent.includes('MAXIMUM EVENT COUNT'),'Bell hazard mode plans events, labelled as events');check($('#j-extras-out').textContent.includes('Participants to enrol')&&!$('#j-dropout')&&!$('.j-dropout-out'),'Bell hazard mode converts events to participants instead of a dropout line');check(!$('#j-protocol-text').textContent.includes('Allowing for')&&$('#j-protocol-text').textContent.includes('participants need to be enrolled'),'Bell hazard protocol text keeps events and participants apart');
+ await wait(()=>$('.j-whatif')).catch(()=>{});check(all('.j-whatif tbody tr').map(tr=>tr.cells[1].textContent).join()==='252,337,416','what-if sizes grow with the target power (Bell, hazard mode)');
  edit('looks','2');$('#j-looks').dispatchEvent(new (win().Event)('change',{bubbles:true}));submit();check(all('.j-table.j-wide tbody tr').length===2,'two-look design has two rows');
  await setEffects(true);await load('#arena?v=1&test=gsd-efficacy');submit();await wait(()=>$('.j-ko').textContent.startsWith('ROUND 1')).catch(()=>{});check($('.j-ko').textContent.startsWith('ROUND 1')&&$('.j-ko').textContent.includes('Z ≥'),'Bell fights one round per look with its boundary');doc().dispatchEvent(new (win().KeyboardEvent)('keydown',{key:'x',bubbles:true}));await setEffects(false);
  // ---- Every fighter: default, alternate mode, help, links ----
@@ -99,7 +101,7 @@ document.querySelector('#run').onclick=async()=>{
  const pending=[];
  for(const [id,total,otherMode] of heroes){
   await load('#arena?v=1&test='+id);submit();check(score()===String(total),id+' default result');
-  check($('.j-score').textContent.includes(win().StatFighter.methods[id].totalLabel),id+' displays correct unit label');
+  {const m=win().StatFighter.methods[id];check($('.j-score').textContent.includes(m.labelsFor({...m.defaults}).totalLabel),id+' displays correct unit label');}
   const distinct=win().StatFighter.methods[id].distinctModes;mode(otherMode);submit();const otherTotal=score();check(distinct?!!otherTotal&&$('#j-error').hidden:otherTotal===String(total),id+(distinct?' alternate input calculates':' alternate mode agrees'));
   await delay(80);check(!!$('#j-curve .j-whatif'),id+' power curve and what-if table');
   const method=win().StatFighter.methods[id],field=method.inputFields({...method.defaults,mode:otherMode}).find(k=>k!=='sd');

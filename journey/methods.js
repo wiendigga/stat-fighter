@@ -64,6 +64,12 @@
       // the receipt both read fields through fieldView, and hidden design fields are skipped.
       fieldView(id, raw) { return { ...this.fields[id], ...(this.fieldFor?.(id, raw) ?? {}) }; },
       shownDesignFields(raw) { return this.designFields.filter(id => !this.fieldView(id, raw).hidden); },
+      // Extras shown after a result. A method may choose them per input mode (extrasFor: Bell and
+      // Towel show the dropout allowance for participants, the enrolment step for events). Every
+      // extra key stays a non-core draft key (kit.extraKeys), so editing one never stales a result.
+      shownExtras(raw) { return this.extrasFor?.(raw) ?? [...(this.dropout === false ? [] : ['dropout']), ...(this.extraFields ?? [])]; },
+      // Result labels and unit; a method whose unit depends on the input mode overrides them (labels).
+      labelsFor(raw) { return { unit: this.unit, totalLabel: this.totalLabel, scoreLabel: this.scoreLabel ?? 'REQUIRED SAMPLE SIZE', extraTitle: this.extraTitle ?? 'PLANNING EXTRAS', countNote: `Complete, analyzable ${this.unit}.`, ...(this.labels?.(raw) ?? {}) }; },
       receipt(raw, parameters, result) {
         const rows = [['Input mode', this.modes.find(mode => mode.id === raw.mode).label]];
         for (const id of [...this.shownDesignFields(raw), ...this.inputFields(raw)]) rows.push([this.fieldView(id, raw).label, raw[id]]);
@@ -310,24 +316,34 @@
     assumptions: 'Independent multinomial observations, fixed categories and an adequately large expected count in every cell. Specify correct df: k−1−estimated parameters for goodness of fit, or (rows−1)(columns−1) for independence. The table mode tests independence using alternative margins; it does not accept raw counts. With sparse cells use an appropriate exact or simulation method. The noncentral χ² approximation does not provide exact finite-sample power.',
     help: { effect: ['Cohen’s w', 'w² is the sum of (alternative probability − null probability)² / null probability. Supply all scientific assumptions externally in direct-w mode.'], df: ['Degrees of freedom', 'For independence use (rows−1)(columns−1). For goodness of fit subtract estimated null parameters from k−1. For the 2 × 2 probability editor set df=1.'], ...Object.fromEntries(cells.map(id=>[id,['Joint cell probabilities','Enter positive population probabilities, not counts or row percentages. All four sum to one. Row and column margins define the independence null; w is derived from the departures.']])) },
   });
+  // Enrolment from events, for Harbor and for Bell and Towel in hazard-ratio mode: exponential event
+  // and loss times, uniform accrual over the accrual period, then additional follow-up for everyone.
+  // Enrol enough that the expected number of observed events at the end of follow-up is the target.
+  const enrolmentIds = ['controlMedian', 'accrual', 'followUp', 'loss'];
+  function enrolmentRows(raw, stats, { hr, allocation, events, groups }) {
+    const [g1, g2] = groups;
+    const median = number(raw, 'controlMedian', `${g2} median time`), accrual = number(raw, 'accrual', 'Accrual period'), followUp = number(raw, 'followUp', 'Additional follow-up'), loss = number(raw, 'loss', 'Loss to follow-up');
+    if (median <= 0) fail('controlMedian', `${g2} median time must be positive.`);
+    if (accrual < 0 || followUp < 0 || accrual + followUp <= 0) fail('accrual', 'Accrual and follow-up must be non-negative, with some follow-up time.');
+    if (loss < 0 || loss >= 1) fail('loss', 'Loss to follow-up per time unit must be from 0 to below 1.');
+    const control = Math.LN2 / median, dropoutHazard = -Math.log1p(-loss);
+    const p1 = stats.eventProbability({ hazard: hr * control, dropoutHazard, accrual, followUp }), p2 = stats.eventProbability({ hazard: control, dropoutHazard, accrual, followUp });
+    const overall = allocation * p1 + (1 - allocation) * p2, total = Math.ceil(events / overall - 1e-9);
+    return [[`Hazard ratio used · ${g1} / ${g2}`, Number(hr.toPrecision(6))], [`P(event observed) · ${g1}`, p1.toFixed(4)], [`P(event observed) · ${g2}`, p2.toFixed(4)], ['Weighted event probability', overall.toFixed(4)], ['Participants to enrol', fmtCount(total)], [`${g1} / ${g2} (approx.)`, `${fmtCount(Math.round(total * allocation))} / ${fmtCount(total - Math.round(total * allocation))}`]];
+  }
+  function enrolmentTable(raw, stats, options, note) {
+    let rows;
+    try { rows = enrolmentRows(raw, stats, options); } catch (error) { rows = [['Enrolment not calculated', error.message]]; }
+    return { title: 'Enrolment from events', rows, note };
+  }
   register({
     ...expansionBase, id: 'log-rank', name: 'Log-rank · Schoenfeld event approximation', signed: false, effectSymbol: '|log HR|', unit: 'observed events', totalLabel: 'OBSERVED EVENTS', scoreLabel: 'REQUIRED EVENT COUNT', missionLabel: 'EVENT PLANNING MISSION', waitingAction: 'Find the event target.',
     defaults: { mode: 'effect', effect: String(Math.abs(Math.log(.7))), hazardRatio: '0.7', allocation: '0.5', alpha: '0.05', power: '0.8', controlMedian: '12', accrual: '12', followUp: '12', loss: '0.05' },
     // Events are the verified answer. Enrolment is an optional, separately labelled second step.
-    dropout: false, extraTitle: 'ENROLMENT · OPTIONAL SECOND STEP', extraFields: ['controlMedian', 'accrual', 'followUp', 'loss'],
+    dropout: false, extraTitle: 'ENROLMENT · OPTIONAL SECOND STEP', extraFields: enrolmentIds,
     resultTables(raw, p, r, stats) {
-      const rows = [];
-      try {
-        const median = number(raw, 'controlMedian', 'Group 2 median time'), accrual = number(raw, 'accrual', 'Accrual period'), followUp = number(raw, 'followUp', 'Additional follow-up'), loss = number(raw, 'loss', 'Loss to follow-up');
-        if (median <= 0) fail('controlMedian', 'Group 2 median time must be positive.');
-        if (accrual < 0 || followUp < 0 || accrual + followUp <= 0) fail('accrual', 'Accrual and follow-up must be non-negative, with some follow-up time.');
-        if (loss < 0 || loss >= 1) fail('loss', 'Loss to follow-up per time unit must be from 0 to below 1.');
-        const hr = raw.mode === 'hazard-ratio' ? Number(raw.hazardRatio) : Math.exp(-p.effect), control = Math.LN2 / median, dropoutHazard = -Math.log1p(-loss);
-        const p1 = stats.eventProbability({ hazard: hr * control, dropoutHazard, accrual, followUp }), p2 = stats.eventProbability({ hazard: control, dropoutHazard, accrual, followUp });
-        const overall = p.allocation * p1 + (1 - p.allocation) * p2, total = Math.ceil(r.total / overall - 1e-9);
-        rows.push(['Hazard ratio used · Group 1 / Group 2', Number(hr.toPrecision(6))], ['P(event observed) · Group 1', p1.toFixed(4)], ['P(event observed) · Group 2', p2.toFixed(4)], ['Weighted event probability', overall.toFixed(4)], ['Participants to enrol', fmtCount(total)], ['Group 1 / Group 2 (approx.)', `${fmtCount(Math.round(total * p.allocation))} / ${fmtCount(total - Math.round(total * p.allocation))}`]);
-      } catch (error) { rows.push(['Enrolment not calculated', error.message]); }
-      return [{ title: 'Enrolment from events', rows, note: 'Exponential event and loss times, uniform accrual, then additional follow-up for everyone. Effect-size mode assumes Group 1 has the lower hazard. A planning approximation; the event count above is unchanged.' }];
+      const hr = raw.mode === 'hazard-ratio' ? Number(raw.hazardRatio) : Math.exp(-p.effect);
+      return [enrolmentTable(raw, stats, { hr, allocation: p.allocation, events: r.total, groups: ['Group 1', 'Group 2'] }, 'Exponential event and loss times, uniform accrual, then additional follow-up for everyone. Effect-size mode assumes Group 1 has the lower hazard. A planning approximation; the event count above is unchanged.')];
     },
     modes: [{ id: 'effect', label: 'Absolute log hazard ratio', fields: ['effect'] }, { id: 'hazard-ratio', label: 'Hazard ratio', fields: ['hazardRatio'] }],
     designFields: ['allocation'], fields: { effect: numeric('Absolute log hazard ratio', 'Magnitude of natural log(HR), not HR itself.', { min: .001, max: Math.log(10) }), hazardRatio: numeric('Hazard ratio · Group 1 / Group 2', 'Constant proportional-hazards ratio, 0.1–10 excluding 1.', { min: .1, max: 10 }), allocation: numeric('Group 1 allocation proportion', 'Fraction randomized to Group 1; 0.5 means equal allocation.', { min: .1, max: .9 }), controlMedian: numeric('Group 2 median time to event', 'In your chosen time unit, e.g. months.', { min: 0 }), accrual: numeric('Accrual period', 'Time to recruit everyone, same unit.', { min: 0 }), followUp: numeric('Additional follow-up', 'Time after the last enrolment, same unit.', { min: 0 }), loss: numeric('Loss to follow-up per time unit', 'Decimal: 0.05 means 5% lost per unit.', { min: 0, max: .99 }) },
@@ -816,7 +832,20 @@
     hazardRatio: numeric('Hazard ratio', 'Event-driven design with equal allocation; the size is a number of events.', { min: .1, max: 10 }),
     fixedSize: numeric('Fixed-design sample size', 'From any fighter: the size that gives your target power without interim looks.', { min: 1 }),
     alpha: numeric('One-sided alpha', '0.025 one-sided is the regulatory default.', { min: .0001, max: .2, presets: ['0.01', '0.025', '0.05'] }),
+    controlMedian: numeric('Control median time to event', 'In your chosen time unit, e.g. months. Test hazard = HR × control hazard.', { min: 0 }),
+    accrual: numeric('Accrual period', 'Time to recruit everyone, at a uniform rate; same unit.', { min: 0 }),
+    followUp: numeric('Additional follow-up', 'Time from the last enrolment to the final analysis, same unit.', { min: 0 }),
+    loss: numeric('Loss to follow-up per time unit', 'Decimal: 0.05 means 5% lost per unit.', { min: 0, max: .99 }),
   };
+  // fixedSize belongs to the target power it was planned for (plannedPower). Another target, as in
+  // the what-if table, keeps the effect and rescales it by ((z_α + z_β′) / (z_α + z_β))²: exact for
+  // the effect and hazard modes, and in fixed mode the stated assumption that the entered size has
+  // exactly the target power.
+  function retarget(p) {
+    if (p.plannedPower === undefined || p.power === p.plannedPower) return p;
+    const z = power => engine.normalCritical(p.alpha) + engine.normalCritical(1 - power);
+    return { ...p, fixedSize: p.fixedSize * (z(p.power) / z(p.plannedPower)) ** 2, plannedPower: p.power };
+  }
   const sequentialBase = {
     marginPlanning: true,
     signed: false,
@@ -858,13 +887,13 @@
     },
     validateParameters(p, raw) {
       const z = engine.normalCritical(p.alpha) + engine.normalCritical(1 - p.power);
-      p.input = p.effect; p.mode = raw.mode;
+      p.input = p.effect; p.mode = raw.mode; p.plannedPower = p.power;
       p.fixedSize = raw.mode === 'fixed' ? p.effect : raw.mode === 'effect' ? 4 * z * z / (p.effect * p.effect) : 4 * z * z / Math.log(p.effect) ** 2;
       p.evenTotal = raw.mode === 'effect';
       if (p.fixedSize > 1e6) fail(raw.mode === 'fixed' ? 'fixedSize' : raw.mode === 'effect' ? 'effect' : 'hazardRatio', 'The design would exceed the 1,000,000-unit limit.');
     },
     derive(raw) {
-      try { const p = this.normalize(raw); return `FIXED-DESIGN SIZE ${Number(p.fixedSize.toPrecision(7))} · LOOKS AT ${p.fractions.map(x => `${Math.round(x * 100)}%`).join(' / ')} · ${spendingNames[p.spending]}`; }
+      try { const p = this.normalize(raw); return `FIXED-DESIGN ${raw.mode === 'hazard' ? 'EVENTS' : 'SIZE'} ${Number(p.fixedSize.toPrecision(7))} · LOOKS AT ${p.fractions.map(x => `${Math.round(x * 100)}%`).join(' / ')} · ${spendingNames[p.spending]}`; }
       catch (e) { return e.message; }
     },
     // ρ or γ appears only for the family that uses it, labelled for that family; the second
@@ -887,20 +916,30 @@
     },
     effectHint: 'The size without interim looks; interim looks inflate it slightly.',
     formula: '',
-    solve: (stats, p) => stats.sequentialSampleSize(p),
-    powerAt: (stats, p, n) => stats.sequentialPowerAt({ ...p, n }),
+    solve: (stats, p) => stats.sequentialSampleSize(retarget(p)),
+    powerAt: (stats, p, n) => stats.sequentialPowerAt({ ...retarget(p), n }),
     allocations: r => r.looks.map((n, k) => [k === r.looks.length - 1 ? 'Final look' : `Look ${k + 1}`, n]),
     rounds: r => r.looks.map((n, k) => `${k === r.looks.length - 1 ? 'FINAL' : `ROUND ${k + 1}`}<b>Z ≥ ${r.design.efficacy[k].toFixed(2)}</b>`),
-    resultTables(raw, p, r) {
-      const d = r.design, K = d.fractions.length, futility = Boolean(d.futility);
+    // Hazard-ratio mode counts events, never participants: its labels say so, the participant dropout
+    // allowance gives way to the enrolment step (accrual, follow-up, loss), and no other mode shows it.
+    labels(raw) {
+      if (raw.mode === 'hazard') return { unit: 'events', scoreLabel: 'MAXIMUM EVENT COUNT', totalLabel: 'EVENTS AT THE FINAL LOOK', extraTitle: 'ENROLMENT · OPTIONAL SECOND STEP', countNote: 'Observed events, not participants. The enrolment step below converts.' };
+      if (raw.mode === 'effect') return { unit: 'participants', totalLabel: 'PARTICIPANTS AT THE FINAL LOOK' };
+      return {};
+    },
+    extrasFor: raw => raw.mode === 'hazard' ? enrolmentIds : ['dropout'],
+    extraFields: enrolmentIds,
+    resultTables(raw, p, r, stats) {
+      const d = r.design, K = d.fractions.length, futility = Boolean(d.futility), hazard = p.mode === 'hazard';
       const rows = d.fractions.map((t, k) => [k === K - 1 ? 'Final' : `${k + 1}`, `${(t * 100).toFixed(1)}%`, fmtCount(r.looks[k]), d.efficacy[k].toFixed(4), engine.normalCdf(-d.efficacy[k]).toFixed(5), d.alphaSpent[k].toFixed(5), ...(futility ? [d.futility[k].toFixed(4), d.betaSpent[k].toFixed(5)] : []), `${(d.stopH1[k] * 100).toFixed(1)}%`, `${(d.stopH0[k] * 100).toFixed(1)}%`]);
-      const unit = p.mode === 'hazard' ? 'events' : p.mode === 'effect' ? 'participants' : 'units';
+      const unit = hazard ? 'events' : p.mode === 'effect' ? 'participants' : 'units', noun = hazard ? 'events' : 'size';
       return [
         { title: 'Boundaries per look', columns: ['Look', 'Information', `Cumulative ${unit}`, 'Efficacy Z ≥', 'Nominal p', 'α spent', ...(futility ? ['Futility Z <', 'β spent'] : []), 'Stop | H1', 'Stop | H0'], rows },
-        { title: 'Design summary', rows: [['Fixed-design size', Number(p.fixedSize.toPrecision(7))], ['Inflation factor', d.inflation.toFixed(4)], ['Maximum size', fmtCount(r.total)], ['Expected size under H1', fmtCount(Math.round(d.expectedH1 * r.total))], ['Expected size under H0', fmtCount(Math.round(d.expectedH0 * r.total))], ['Efficacy spending', `${spendingNames[p.spending]}${['power', 'hsd'].includes(p.spending) ? ` (${p.spendingParameter})` : ''}`], ...(futility ? [['Futility spending (non-binding)', `${spendingNames[p.futilitySpending]}${['power', 'hsd'].includes(p.futilitySpending) ? ` (${p.futilityParameter})` : ''}`]] : [])], note: 'Expected sizes count a stop at an interim as that look’s cumulative size, with futility stops obeyed.' },
+        { title: 'Design summary', rows: [[`Fixed-design ${noun}`, Number(p.fixedSize.toPrecision(7))], ['Inflation factor', d.inflation.toFixed(4)], [`Maximum ${noun}`, fmtCount(r.total)], [`Expected ${noun} under H1`, fmtCount(Math.round(d.expectedH1 * r.total))], [`Expected ${noun} under H0`, fmtCount(Math.round(d.expectedH0 * r.total))], ['Efficacy spending', `${spendingNames[p.spending]}${['power', 'hsd'].includes(p.spending) ? ` (${p.spendingParameter})` : ''}`], ...(futility ? [['Futility spending (non-binding)', `${spendingNames[p.futilitySpending]}${['power', 'hsd'].includes(p.futilitySpending) ? ` (${p.futilityParameter})` : ''}`]] : [])], note: `Expected ${hazard ? 'event counts' : 'sizes'} count a stop at an interim as that look’s cumulative ${hazard ? 'events' : 'size'}, with futility stops obeyed.` },
+        ...(hazard ? [enrolmentTable(raw, stats, { hr: p.effect, allocation: .5, events: r.total, groups: ['Test', 'Control'] }, 'Equal allocation; exponential event and loss times; uniform accrual, then additional follow-up for everyone. Enrolling this many makes the expected number of events at the end of follow-up equal to the maximum event count. Looks are triggered by events, not by calendar time or enrolment. A planning approximation; the event counts above are unchanged.')] : []),
       ];
     },
-    additionalReceipt: (raw, p) => [['Fixed-design size', p.fixedSize], ['Unit', p.mode === 'hazard' ? 'events' : p.mode === 'effect' ? 'participants, two equal groups' : 'as for the fixed design']],
+    additionalReceipt: (raw, p) => [[p.mode === 'hazard' ? 'Fixed-design events' : 'Fixed-design size', p.fixedSize], ['Unit', p.mode === 'hazard' ? 'events (observed, not participants)' : p.mode === 'effect' ? 'participants, two equal groups' : 'as for the fixed design']],
     allocationRule: 'Maximum size = inflation factor × fixed-design size, rounded up (to an even total for two equal groups). Interim sizes are the information fractions of the maximum, rounded up.',
     help: {
       looks: ['Number of looks', 'Two looks is one interim analysis plus the final; three is two interims plus the final. Every extra look inflates the maximum size a little but adds a chance to stop early.'],
@@ -913,10 +952,14 @@
       effect: ['Standardized effect', 'Mean difference ÷ SD for two equal groups with a normal outcome. The fixed-design size uses the normal approximation 4(z_α + z_β)²/d².'],
       hazardRatio: ['Hazard ratio', 'For an event-driven design with equal allocation. The size is a number of events: 4(z_α + z_β)²/ln(HR)² without interim looks.'],
       fixedSize: ['Fixed-design size', 'Bring the answer from any other fighter: the size that gives your target power with a single analysis. Bell inflates it for the interim looks. It is assumed to have exactly the target power.'],
+      controlMedian: ['Control median time', 'The anticipated median time to the event in the control group, in any time unit. Control hazard = ln 2 / median, assumed constant; the test group’s hazard is HR times that. Use the same unit for accrual, follow-up and loss.'],
+      accrual: ['Accrual period', 'How long recruitment takes, with participants arriving at a uniform rate over that time. Zero means everyone starts together.'],
+      followUp: ['Additional follow-up', 'Time from the last enrolment to the final analysis. Everyone is followed for at least this long.'],
+      loss: ['Loss to follow-up', 'The proportion of participants lost per time unit, converted to a constant dropout hazard. 0.05 per month means about 5% lost each month. Lost participants are censored and contribute no observed event, so this replaces the participant dropout allowance of the other modes.'],
     },
-    assumptions: 'One-sided testing of a normally distributed statistic whose information grows in proportion to the sample size or event count (canonical joint distribution; Jennison and Turnbull 2000). Effect-size mode plans two equal groups with a known-variance normal approximation; hazard-ratio mode plans events for a log-rank test with equal allocation (Schoenfeld). Fixed mode takes a fixed-design size from another fighter and assumes it has exactly the target power. Information fractions are planned; analyses that happen at other times need the boundaries recomputed by the same spending function.',
+    assumptions: 'One-sided testing of a normally distributed statistic whose information grows in proportion to the sample size or event count (canonical joint distribution; Jennison and Turnbull 2000). Effect-size mode plans two equal groups with a known-variance normal approximation; hazard-ratio mode plans events for a log-rank test with equal allocation (Schoenfeld); its optional enrolment step converts the maximum event count into participants with exponential event and loss times and uniform accrual, and does not change the event count. Fixed mode takes a fixed-design size from another fighter and assumes it has exactly the target power. Information fractions are planned; analyses that happen at other times need the boundaries recomputed by the same spending function.',
   };
-  const defaultsSequential = { mode: 'effect', effect: '0.5', hazardRatio: '0.7', fixedSize: '128', looks: '3', t1: '0.5', t2: '0.75', spending: 'obf', spendingParameter: '-4', alpha: '0.025', power: '0.9' };
+  const defaultsSequential = { mode: 'effect', effect: '0.5', hazardRatio: '0.7', fixedSize: '128', looks: '3', t1: '0.5', t2: '0.75', spending: 'obf', spendingParameter: '-4', alpha: '0.025', power: '0.9', controlMedian: '12', accrual: '12', followUp: '12', loss: '0.05' };
   register({
     ...sequentialBase,
     id: 'gsd-efficacy',

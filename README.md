@@ -28,12 +28,12 @@ Twenty-two fighters live in four districts, and every one of them faces The Null
 | | Tess | TOST equivalence, parallel t-tests |
 | | Ratio | Log-normal TOST, parallel bioequivalence |
 | | Switch | 2×2 crossover TOST, average bioequivalence |
-| | Bell | Group sequential design with efficacy stopping (two or three looks, four spending functions) |
-| | Towel | Group sequential design with efficacy and non-binding futility stopping |
+| | Bell | Group sequential design with efficacy stopping (two or three looks, four spending functions); in hazard-ratio mode it plans events, with an optional enrolment step |
+| | Towel | Group sequential design with efficacy and non-binding futility stopping; enrolment step as for Bell |
 
 A future fighter can be marked `artPending: true` in `journey/content.js`: it stays out of the menus, and its direct link opens it with a placeholder silhouette.
 
-Methods marked *approximate* use explicitly stated large-sample models; each fighter's arena explains its assumptions. Every result can show an optional dropout allowance, a power curve and the sample size at 80, 90 and 95 percent power; none of these changes the verified number.
+Methods marked *approximate* use explicitly stated large-sample models; each fighter's arena explains its assumptions. Every result can show an optional dropout allowance (for event counts, an enrolment step from accrual, follow-up and loss to follow-up instead), a power curve and the sample size at 80, 90 and 95 percent power; none of these changes the verified number.
 
 ## The interface
 
